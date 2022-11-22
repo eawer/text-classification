@@ -1,0 +1,51 @@
+services:
+  model-preparation:
+    build:
+      context: services/model_preparation
+    volumes:
+      - ./model/raw:/model/raw
+      - ./model/onnx:/model/onnx
+    command: python3 -m transformers.onnx --feature=sequence-classification --model=/model/raw/ /model/onnx/
+
+  inference:
+    image: nvcr.io/nvidia/tritonserver:22.10-py3
+    volumes:
+      - ./model/onnx/:/models/maverick/1/
+      - ./services/inference/model/config.pbtxt:/models/maverick/config.pbtxt
+    depends_on:
+      model-preparation:
+        condition: service_completed_successfully
+    command: tritonserver --model-repository=/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  db:
+    image: postgres
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    volumes:
+      - ./services/database/scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  api:
+    build:
+      context: services/api
+    ports:
+      - 5000:5000
+    depends_on:
+      db:
+        condition: service_healthy
+      inference:
+        condition: service_healthy
+    command: python /app/main.py
